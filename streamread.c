@@ -5,6 +5,8 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <math.h>
+#include <time.h>
 
 /* streamread.c -- Demonstrate read from a Xillybus FIFO.
 
@@ -22,16 +24,49 @@ See http://www.xillybus.com/doc/ for usage examples an information.
 */
 unsigned char buf[128];
 
-void allwrite(int fd, unsigned char *buf, int len);
+struct xillyfifo {
+  unsigned long write_position;
+  unsigned long size;
+  unsigned char *baseaddr;
+};
+
+struct xillyfifo strct_fifo;
+
+void output_write(int fd, unsigned char *buf, int len);
+void fifo_write(struct xillyfifo *fifo, unsigned char *buf, int len);
+void fifo_output_write(struct xillyfifo *fifo, int fd);
 
 int main(void) {
 
   int fd, rc, fdw, i;
   int flag = 0;
   int count = 0;
+  int capture_count = 0;
+  time_t ptime;
+  unsigned char folder_name[30];
+  unsigned char path[40];
 
+  double time_before = 0.02;
+  double voltage_threshold = 0.1;
+  double time_after = 0.05;
+
+  unsigned long before_cache = pow(2,(int)(1 + log2(time_before * 10000000 * 4))); //1048576
+  int threshold = (voltage_threshold / 2.5 * 8192 + 8192)/256; //33
+  unsigned long after_bags = pow(2,(int)(1 + log2(time_after * 10000000 / 32))); //16384
+
+  struct xillyfifo *fifo = &strct_fifo;
+
+  fifo->baseaddr = NULL;
+  fifo->size = before_cache;
+  fifo->write_position = 0;
+
+  fifo->baseaddr = malloc(fifo->size);
+
+  time(&ptime);
+  strcpy(folder_name, ctime(&ptime));
+  mkdir(folder_name, S_IRUSR | S_IWUSR | S_IXUSR | S_IRGRP | S_IWGRP | S_IXGRP |S_IROTH | S_IWOTH |S_IXOTH);
   fd = open("/dev/xillybus_read_32", O_RDONLY);
-  fdw = open("/home/adoge/xillybus_save_32", O_WRONLY | O_TRUNC);
+  //fd = open("xillybus_read_32", O_RDONLY);
 
   if (fd < 0) {
     if (errno == ENODEV)
@@ -48,7 +83,7 @@ int main(void) {
       continue;
 
     if (rc < 0) {
-      perror("allread() failed to read");
+      perror("read() failed to read");
       exit(1);
     }
 
@@ -61,19 +96,33 @@ int main(void) {
     // rc contains the number of bytes that were read.
     if(flag == 0) {
         for(i = 1;i < rc;i += 4) {
-        	if(buf[i] >= 33) {
+        	if(buf[i] >= threshold) {
         		flag = 1;
         		break;
         	}
         }
     }
+
+    if(flag == 0) {
+    	fifo_write(fifo, buf, rc);
+    }
+
     if(flag == 1) {
-    	allwrite(fdw, buf, rc);
+    	sprintf(path, "%s/%d", folder_name, capture_count);
+    	capture_count ++;
+    	fdw = open(path, O_WRONLY | O_TRUNC | O_CREAT, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
+    	fifo_output_write(fifo, fdw);
+    	flag = 2;
+    }
+
+    if(flag == 2) {
+    	fifo_write(fifo, buf, rc);
+    	output_write(fdw, buf, rc);
     	count ++;
-    	if(count == 16384) {
+    	if(count == after_bags) {
     		count = 0;
     		flag = 0;
-    		exit(0);
+    		//exit(0);
     	}
     }
   }
@@ -92,7 +141,7 @@ int main(void) {
    The function doesn't expect to reach EOF either.
 */
 
-void allwrite(int fd, unsigned char *buf, int len) {
+void output_write(int fd, unsigned char *buf, int len) {
   int sent = 0;
   int rc;
 
@@ -103,15 +152,84 @@ void allwrite(int fd, unsigned char *buf, int len) {
       continue;
 
     if (rc < 0) {
-      perror("allwrite() failed to write");
-      exit(1);
+      perror("output_write() failed to write");
+      break;
     }
 
     if (rc == 0) {
       fprintf(stderr, "Reached write EOF (?!)\n");
-      exit(1);
+      break;
     }
 
     sent += rc;
   }
+}
+
+void fifo_write(struct xillyfifo *fifo, unsigned char *buf, int len) {
+	unsigned int num_to_fill;
+	unsigned int num_left;
+	if(fifo->write_position + len <= fifo->size) {
+		memcpy(fifo->baseaddr + fifo->write_position, buf, len);
+		fifo->write_position += len;
+		if(fifo->write_position == fifo->size)
+			fifo->write_position = 0;
+	}
+	else {
+		num_to_fill = fifo->size - fifo->write_position;
+		memcpy(fifo->baseaddr + fifo->write_position, buf, num_to_fill);
+		num_left = len - num_to_fill;
+		memcpy(fifo->baseaddr, (unsigned char *)(buf + num_to_fill), num_left);
+		fifo->write_position = num_left;
+	}
+}
+
+void fifo_output_write(struct xillyfifo *fifo, int fd) {
+	int sent;
+	int rc;
+	unsigned long len_to_fill = fifo->size - fifo->write_position;
+	unsigned long len_left = fifo->write_position;
+
+	sent = 0;
+
+	while (sent < len_to_fill) {
+	  rc = write(fd, fifo->baseaddr + fifo->write_position + sent, len_to_fill - sent);
+
+	  if ((rc < 0) && (errno == EINTR))
+	    continue;
+
+	  if (rc < 0) {
+	    perror("fifo_output_write() failed to write (pre)");
+	    break;
+	  }
+
+	  if (rc == 0) {
+	    fprintf(stderr, "Reached write EOF (?!)\n");
+	    break;
+	  }
+
+	  sent += rc;
+	}
+
+	sent = 0;
+
+	while (sent < len_left) {
+	  rc = write(fd, fifo->baseaddr + sent, len_left - sent);
+
+	  if ((rc < 0) && (errno == EINTR))
+	    continue;
+
+	  if (rc < 0) {
+	    perror("fifo_output_write() failed to write (after)");
+	    break;
+	  }
+
+	  if (rc == 0) {
+	    fprintf(stderr, "Reached write EOF (?!)\n");
+	    break;
+	  }
+
+	  sent += rc;
+	}
+
+	fifo->write_position = 0;
 }
