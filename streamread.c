@@ -44,6 +44,7 @@ int main(void) {
   int capture_count = 0;
   time_t ptime;
   unsigned char folder_name[30];
+  unsigned char *pfolder = folder_name;
   unsigned char path[40];
 
   double time_before = 0.02;
@@ -64,6 +65,16 @@ int main(void) {
 
   time(&ptime);
   strcpy(folder_name, ctime(&ptime));
+  while(*pfolder != '\0') {
+    if(*pfolder == '\n') {
+      *pfolder = '\0';
+      break;
+    }
+    if(*pfolder == ' ' || *pfolder == ':') {
+        *pfolder = '-';
+    }
+    pfolder ++;
+  }
   mkdir(folder_name, S_IRUSR | S_IWUSR | S_IXUSR | S_IRGRP | S_IWGRP | S_IXGRP |S_IROTH | S_IWOTH |S_IXOTH);
   fd = open("/dev/xillybus_read_32", O_RDONLY);
   //fd = open("xillybus_read_32", O_RDONLY);
