@@ -1,0 +1,20 @@
+设置静态：
+在/etc/network/interfaces添加
+auto enp7s0
+iface enp7s0 inet static
+address 192.168.0.101
+netmask 255.255.255.0
+gateway 192.168.0.1
+dns-nameserver 8.8.8.8
+添加后sudo /etc/init.d/networking restart
+
+
+恢复动态：
+删除/etc/network/interfaces当中enp7s0的部分，
+修改/etc/NetworkManager/NetworkManager.conf当中的managed=true
+然后重启
+
+
+
+
+
